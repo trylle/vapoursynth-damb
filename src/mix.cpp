@@ -3,6 +3,8 @@
 #include <cstring>
 
 #include <string>
+#include <vector>
+#include <memory>
 
 #include <VapourSynth.h>
 #include <VSHelper.h>
@@ -13,20 +15,60 @@
 #include "shared.h"
 
 
+template<class T>
+struct VSDeleter;
+
+
+template<>
+struct VSDeleter<const VSFrameRef> {
+    const VSAPI *vsapi = nullptr;
+
+    VSDeleter(const VSAPI *vsapi_arg = nullptr)
+            : vsapi(vsapi_arg)
+    {
+
+    }
+
+    void operator()(const VSFrameRef *ptr) {
+        vsapi->freeFrame(ptr);
+    }
+};
+
+
+template<>
+struct VSDeleter<VSNodeRef> {
+    const VSAPI *vsapi = nullptr;
+
+    VSDeleter(const VSAPI *vsapi_arg = nullptr)
+            : vsapi(vsapi_arg)
+    {
+
+    }
+
+    void operator()(VSNodeRef *ptr) {
+        vsapi->freeNode(ptr);
+    }
+};
+
+
+template<class T>
+using VSUniquePtr = std::unique_ptr<T, VSDeleter<T>>;
+
+
 typedef struct {
-	VSNodeRef *clipa = nullptr;
-	VSNodeRef *clipb = nullptr;
+	VSUniquePtr<VSNodeRef> clipa;
+    VSUniquePtr<VSNodeRef> clipb;
 	double clipa_level = 1;
 	double clipb_level = 1;
     const VSVideoInfo *vi = nullptr;
 
-    SF_INFO sfinfo = {};
-    uint8_t *buffer = nullptr;
-    int sample_size = 0;
-    int sample_type = 0;
-    double samples_per_frame = 0;
-    double delay_seconds = 0;
-    sf_count_t delay_samples = 0;
+    //SF_INFO sfinfo = {};
+    std::vector<uint8_t> buffer;
+    //int sample_size = 0;
+    //int sample_type = 0;
+    //double samples_per_frame = 0;
+    //double delay_seconds = 0;
+    //sf_count_t delay_samples = 0;
 } DambMixData;
 
 
@@ -36,25 +78,16 @@ static void VS_CC dambMixInit(VSMap *in, VSMap *out, void **instanceData, VSNode
 }
 
 
-static void read_samples(SNDFILE *sndfile, SF_INFO *sfinfo, sf_count_t sample_start, sf_count_t sample_count, int sample_type, int sample_size, uint8_t *buffer) {
-    sf_count_t seek_ret = sf_seek(sndfile, sample_start, SEEK_SET);
+template<class T>
+void mix(std::vector<uint8_t> &dst_vec, const char *clipa_buffer, double clipa_level, const char *clipb_buffer, double clipb_level)
+{
+    auto dst = reinterpret_cast<T *>(dst_vec.data());
+    auto srca = reinterpret_cast<const T *>(clipa_buffer);
+    auto srcb = reinterpret_cast<const T *>(clipb_buffer);
+    int samples = dst_vec.size()/sizeof(T);
 
-    sf_count_t readf_ret = 0;
-    if (seek_ret == sample_start) {
-        if (sample_type == SF_FORMAT_PCM_16)
-            readf_ret = sf_readf_short(sndfile, (short *)buffer, sample_count);
-        else if (sample_type == SF_FORMAT_PCM_32)
-            readf_ret = sf_readf_int(sndfile, (int *)buffer, sample_count);
-        else if (sample_type == SF_FORMAT_FLOAT)
-            readf_ret = sf_readf_float(sndfile, (float *)buffer, sample_count);
-        else
-            readf_ret = sf_readf_double(sndfile, (double *)buffer, sample_count);
-    }
-
-    if (readf_ret < sample_count) {
-        int64_t silence_start_bytes = readf_ret * sfinfo->channels * sample_size;
-        int64_t silence_count_bytes = (sample_count - readf_ret) * sfinfo->channels * sample_size;
-        memset(buffer + silence_start_bytes, 0, silence_count_bytes);
+    for (int i = 0; i<samples; ++i) {
+        dst[i] = static_cast<T>(clipa_buffer[i]*clipa_level+clipb_buffer[i]*clipb_level);
     }
 }
 
@@ -64,55 +97,61 @@ static const VSFrameRef *VS_CC dambMixGetFrame(int n, int activationReason, void
     DambMixData *d = (DambMixData *) * instanceData;
 
     if (activationReason == arInitial) {
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
+        vsapi->requestFrameFilter(n, d->clipa.get(), frameCtx);
+        vsapi->requestFrameFilter(n, d->clipb.get(), frameCtx);
     } else if (activationReason == arAllFramesReady) {
-        const VSFrameRef *src = vsapi->getFrameFilter(n, d->node, frameCtx);
-        VSFrameRef *dst = vsapi->copyFrame(src, core);
-        vsapi->freeFrame(src);
+        //const VSFrameRef *clipa_frame = vsapi->getFrameFilter(n, d->clipa, frameCtx);
+        //const VSFrameRef *clipb_frame = vsapi->getFrameFilter(n, d->clipb, frameCtx);
+        VSUniquePtr<const VSFrameRef> clipa_frame = { vsapi->getFrameFilter(n, d->clipa.get(), frameCtx), vsapi };
+        VSUniquePtr<const VSFrameRef> clipb_frame = { vsapi->getFrameFilter(n, d->clipb.get(), frameCtx), vsapi };
+        VSFrameRef *dst = vsapi->copyFrame(clipa_frame.get(), core);
 
-        // sf_count_t is int64_t
-        sf_count_t sample_start = (sf_count_t)(d->samples_per_frame * n + 0.5);
-        sf_count_t sample_end = (sf_count_t)(d->samples_per_frame * (n + 1) + 0.5);
-        sf_count_t sample_count = sample_end - sample_start;
+        //vsapi->freeFrame(clipa_frame);
+        //vsapi->freeFrame(clipb_frame);
 
-        sf_count_t delayed_start = sample_start - d->delay_samples;
-        sf_count_t delayed_end = sample_end - d->delay_samples;
+        const VSMap *clipa_props = vsapi->getFramePropsRO(clipa_frame.get());
+        const VSMap *clipb_props = vsapi->getFramePropsRO(clipb_frame.get());
+        int err;
+        int input_channels = vsapi->propGetInt(clipa_props, damb_channels, 0, &err);
+        int input_samplerate = vsapi->propGetInt(clipa_props, damb_samplerate, 0, &err);
+        int input_format = vsapi->propGetInt(clipa_props, damb_format, 0, &err);
 
-        int64_t sample_count_bytes = sample_count * d->sfinfo.channels * d->sample_size;
+        // TODO: error checking
 
-        if (delayed_start < 0) {
-            if (delayed_end > 0) {
-                sf_count_t leading_silence = sample_count - delayed_end;
-                int64_t leading_silence_bytes = leading_silence * d->sfinfo.channels * d->sample_size;
-                memset(d->buffer, 0, leading_silence_bytes);
+        const char *clipa_buffer = vsapi->propGetData(clipa_props, damb_samples, 0, &err);
+        sf_count_t clipa_buffer_size = vsapi->propGetDataSize(clipa_props, damb_samples, 0, &err);
+        const char *clipb_buffer = vsapi->propGetData(clipb_props, damb_samples, 0, &err);
+        sf_count_t clipb_buffer_size = vsapi->propGetDataSize(clipb_props, damb_samples, 0, &err);
 
-                read_samples(d->sndfile, &d->sfinfo, 0, delayed_end, d->sample_type, d->sample_size, d->buffer + leading_silence_bytes);
-            } else {
-                memset(d->buffer, 0, sample_count_bytes);
-            }
-        } else {
-            read_samples(d->sndfile, &d->sfinfo, delayed_start, sample_count, d->sample_type, d->sample_size, d->buffer);
-        }
+        d->buffer.resize(clipa_buffer_size);
+
+        auto sample_type = getSampleType(input_format);
+
+        if (sample_type == SF_FORMAT_PCM_16)
+            mix<short>(d->buffer, clipa_buffer, d->clipa_level, clipb_buffer, d->clipb_level);
+        else if (sample_type == SF_FORMAT_PCM_32)
+            mix<int>(d->buffer, clipa_buffer, d->clipa_level, clipb_buffer, d->clipb_level);
+        else if (sample_type == SF_FORMAT_FLOAT)
+            mix<float>(d->buffer, clipa_buffer, d->clipa_level, clipb_buffer, d->clipb_level);
+        else
+            mix<double>(d->buffer, clipa_buffer, d->clipa_level, clipb_buffer, d->clipb_level);
 
         VSMap *props = vsapi->getFramePropsRW(dst);
-        vsapi->propSetData(props, damb_samples, (char *)d->buffer, sample_count_bytes, paReplace);
-        vsapi->propSetInt(props, damb_channels, d->sfinfo.channels, paReplace);
-        vsapi->propSetInt(props, damb_samplerate, d->sfinfo.samplerate, paReplace);
-        vsapi->propSetInt(props, damb_format, d->sfinfo.format, paReplace);
+        vsapi->propSetData(props, damb_samples, (char *)d->buffer.data(), d->buffer.size(), paReplace);
+        vsapi->propSetInt(props, damb_channels, input_channels, paReplace);
+        vsapi->propSetInt(props, damb_samplerate, input_samplerate, paReplace);
+        vsapi->propSetInt(props, damb_format, input_format, paReplace);
 
         return dst;
     }
 
-    return NULL;
+    return nullptr;
 }
 
 
 static void VS_CC dambMixFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
     DambMixData *d = (DambMixData *)instanceData;
 
-    sf_close(d->sndfile);
-    free(d->buffer);
-    vsapi->freeNode(d->node);
     delete d;
 }
 
@@ -122,28 +161,23 @@ static void VS_CC dambMixCreate(const VSMap *in, VSMap *out, void *userData, VSC
     DambMixData *data;
     int err;
 
-    d.delay_seconds = vsapi->propGetFloat(in, "delay", 0, &err);
-
-    d.node = vsapi->propGetNode(in, "clip", 0, NULL);
-    d.vi = vsapi->getVideoInfo(d.node);
-
-    d.filename = vsapi->propGetData(in, "file", 0, NULL);
-
+    d.clipa = { vsapi->propGetNode(in, "clipa", 0, NULL), vsapi };
+    d.clipb = { vsapi->propGetNode(in, "clipb", 0, NULL), vsapi };
+    d.clipa_level = vsapi->propGetFloat(in, "levela", 0, NULL);
+    d.clipb_level = vsapi->propGetFloat(in, "levelb", 0, NULL);
+    d.vi = vsapi->getVideoInfo(d.clipa.get());
 
     if (!d.vi->numFrames) {
         vsapi->setError(out, "Read: Can't accept clips with unknown length.");
-        vsapi->freeNode(d.node);
         return;
     }
 
     if (!d.vi->fpsNum || !d.vi->fpsDen) {
         vsapi->setError(out, "Read: Can't accept clips with variable frame rate.");
-        vsapi->freeNode(d.node);
         return;
     }
 
-
-    d.sfinfo.format = 0;
+    /*d.sfinfo.format = 0;
     d.sndfile = sf_open(d.filename.c_str(), SFM_READ, &d.sfinfo);
     if (d.sndfile == NULL) {
         vsapi->setError(out, std::string("Read: Couldn't open audio file. Error message from libsndfile: ").append(sf_strerror(NULL)).c_str());
@@ -174,13 +208,12 @@ static void VS_CC dambMixCreate(const VSMap *in, VSMap *out, void *userData, VSC
     // sometimes (int)(samples_per_frame + 1), depending on the frame number
     d.buffer = (uint8_t *)malloc((int)(d.samples_per_frame + 1) * d.sfinfo.channels * d.sample_size);
 
-    d.delay_samples = (sf_count_t)(d.delay_seconds * d.sfinfo.samplerate);
-
+    d.delay_samples = (sf_count_t)(d.delay_seconds * d.sfinfo.samplerate);*/
 
     data = new DambMixData();
-    *data = d;
+    *data = std::move(d);
 
-	vsapi->createFilter(in, out, "Read", dambMixInit, dambMixGetFrame, dambMixFree, fmSerial, 0, data, core);
+	vsapi->createFilter(in, out, "Mix", dambMixInit, dambMixGetFrame, dambMixFree, fmSerial, 0, data, core);
 }
 
 
