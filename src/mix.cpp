@@ -163,8 +163,17 @@ static void VS_CC dambMixCreate(const VSMap *in, VSMap *out, void *userData, VSC
 
     d.clipa = { vsapi->propGetNode(in, "clipa", 0, NULL), vsapi };
     d.clipb = { vsapi->propGetNode(in, "clipb", 0, NULL), vsapi };
-    d.clipa_level = vsapi->propGetFloat(in, "levela", 0, NULL);
-    d.clipb_level = vsapi->propGetFloat(in, "levelb", 0, NULL);
+
+    auto levela = vsapi->propGetFloat(in, "levela", 0, &err);
+
+    if (!err)
+        d.clipa_level = levela;
+
+    auto levelb = vsapi->propGetFloat(in, "levelb", 0, &err);
+
+    if (!err)
+        d.clipb_level = levelb;
+
     d.vi = vsapi->getVideoInfo(d.clipa.get());
 
     if (!d.vi->numFrames) {
