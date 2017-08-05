@@ -100,14 +100,9 @@ static const VSFrameRef *VS_CC dambMixGetFrame(int n, int activationReason, void
         vsapi->requestFrameFilter(n, d->clipa.get(), frameCtx);
         vsapi->requestFrameFilter(n, d->clipb.get(), frameCtx);
     } else if (activationReason == arAllFramesReady) {
-        //const VSFrameRef *clipa_frame = vsapi->getFrameFilter(n, d->clipa, frameCtx);
-        //const VSFrameRef *clipb_frame = vsapi->getFrameFilter(n, d->clipb, frameCtx);
         VSUniquePtr<const VSFrameRef> clipa_frame = { vsapi->getFrameFilter(n, d->clipa.get(), frameCtx), vsapi };
         VSUniquePtr<const VSFrameRef> clipb_frame = { vsapi->getFrameFilter(n, d->clipb.get(), frameCtx), vsapi };
         VSFrameRef *dst = vsapi->copyFrame(clipa_frame.get(), core);
-
-        //vsapi->freeFrame(clipa_frame);
-        //vsapi->freeFrame(clipb_frame);
 
         const VSMap *clipa_props = vsapi->getFramePropsRO(clipa_frame.get());
         const VSMap *clipb_props = vsapi->getFramePropsRO(clipb_frame.get());
@@ -185,39 +180,6 @@ static void VS_CC dambMixCreate(const VSMap *in, VSMap *out, void *userData, VSC
         vsapi->setError(out, "Read: Can't accept clips with variable frame rate.");
         return;
     }
-
-    /*d.sfinfo.format = 0;
-    d.sndfile = sf_open(d.filename.c_str(), SFM_READ, &d.sfinfo);
-    if (d.sndfile == NULL) {
-        vsapi->setError(out, std::string("Read: Couldn't open audio file. Error message from libsndfile: ").append(sf_strerror(NULL)).c_str());
-        vsapi->freeNode(d.node);
-        return;
-    }
-
-    if (!isAcceptableFormatType(d.sfinfo.format)) {
-        vsapi->setError(out, "Read: Audio file's type is not supported.");
-        sf_close(d.sndfile);
-        vsapi->freeNode(d.node);
-        return;
-    }
-
-    if (!isAcceptableFormatSubtype(d.sfinfo.format)) {
-        vsapi->setError(out, "Read: Audio file's subtype is not supported.");
-        sf_close(d.sndfile);
-        vsapi->freeNode(d.node);
-        return;
-    }
-
-    d.samples_per_frame = (d.sfinfo.samplerate * d.vi->fpsDen) / (double)d.vi->fpsNum;
-
-    d.sample_type = getSampleType(d.sfinfo.format);
-    d.sample_size = getSampleSize(d.sample_type);
-
-    // sample_count will be sometimes (int)samples_per_frame,
-    // sometimes (int)(samples_per_frame + 1), depending on the frame number
-    d.buffer = (uint8_t *)malloc((int)(d.samples_per_frame + 1) * d.sfinfo.channels * d.sample_size);
-
-    d.delay_samples = (sf_count_t)(d.delay_seconds * d.sfinfo.samplerate);*/
 
     data = new DambMixData();
     *data = std::move(d);
