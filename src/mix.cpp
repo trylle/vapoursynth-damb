@@ -87,7 +87,7 @@ void mix(std::vector<uint8_t> &dst_vec, const char *clipa_buffer, double clipa_l
     int samples = dst_vec.size()/sizeof(T);
 
     for (int i = 0; i<samples; ++i) {
-        dst[i] = static_cast<T>(clipa_buffer[i]*clipa_level+clipb_buffer[i]*clipb_level);
+        dst[i] = static_cast<T>(srca[i]*clipa_level+srcb[i]*clipb_level);
     }
 }
 
