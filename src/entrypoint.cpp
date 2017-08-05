@@ -3,6 +3,7 @@
 
 void readRegister(VSRegisterFunction registerFunc, VSPlugin *plugin);
 void writeRegister(VSRegisterFunction registerFunc, VSPlugin *plugin);
+void mixRegister(VSRegisterFunction registerFunc, VSPlugin *plugin);
 
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
@@ -10,4 +11,5 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
 
     readRegister(registerFunc, plugin);
     writeRegister(registerFunc, plugin);
+    mixRegister(registerFunc, plugin);
 }
