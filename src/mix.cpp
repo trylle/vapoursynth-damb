@@ -73,15 +73,32 @@ static void VS_CC dambMixInit(VSMap *in, VSMap *out, void **instanceData, VSNode
 
 
 template<class T>
-void mix(std::vector<uint8_t> &dst_vec, const char *clipa_buffer, double clipa_level, const char *clipb_buffer, double clipb_level)
+void mix(uint8_t *u8_dst_begin, uint8_t *u8_dst_end, const char *clipa_buffer, double clipa_level, const char *clipb_buffer_begin, const char *clipb_buffer_end, double clipb_level, int input_channels)
 {
-    auto dst = reinterpret_cast<T *>(dst_vec.data());
+    auto dst_begin = reinterpret_cast<T *>(u8_dst_begin);
+    auto dst_end = reinterpret_cast<T *>(u8_dst_end);
     auto srca = reinterpret_cast<const T *>(clipa_buffer);
-    auto srcb = reinterpret_cast<const T *>(clipb_buffer);
-    int samples = dst_vec.size()/sizeof(T);
+    auto srcb_begin = reinterpret_cast<const T *>(clipb_buffer_begin);
+    auto srcb_end = reinterpret_cast<const T *>(clipb_buffer_end);
+    int samples = (dst_end-dst_begin)/input_channels;
+    int clipb_samples = (srcb_end-srcb_begin)/input_channels;
+    auto max_sample = samples-1;
+    auto max_clipb_sample = clipb_samples-1;
 
     for (int i = 0; i<samples; ++i) {
-        dst[i] = static_cast<T>(srca[i]*clipa_level+srcb[i]*clipb_level);
+        for (int k = 0; k<input_channels; ++k) {
+            auto j = i*max_clipb_sample/max_sample;
+            auto lambda = ((i*max_clipb_sample)%max_sample)/double(max_sample);
+
+            if (j==max_clipb_sample) {
+                --j;
+                lambda=1;
+            }
+
+            auto srcb_value = srcb_begin[j*input_channels+k]+(srcb_begin[(j+1)*input_channels+k]-srcb_begin[j*input_channels+k])*lambda;
+
+            dst_begin[i*input_channels+k] = static_cast<T>(srca[i*input_channels+k]*clipa_level+srcb_value*clipb_level);
+        }
     }
 }
 
@@ -116,14 +133,19 @@ static const VSFrameRef *VS_CC dambMixGetFrame(int n, int activationReason, void
 
         auto sample_type = getSampleType(input_format);
 
-        if (sample_type == SF_FORMAT_PCM_16)
-            mix<short>(d->buffer, clipa_buffer, d->clipa_level, clipb_buffer, d->clipb_level);
-        else if (sample_type == SF_FORMAT_PCM_32)
-            mix<int>(d->buffer, clipa_buffer, d->clipa_level, clipb_buffer, d->clipb_level);
-        else if (sample_type == SF_FORMAT_FLOAT)
-            mix<float>(d->buffer, clipa_buffer, d->clipa_level, clipb_buffer, d->clipb_level);
-        else
-            mix<double>(d->buffer, clipa_buffer, d->clipa_level, clipb_buffer, d->clipb_level);
+        auto mix_helper=[&] (std::uint8_t *dst_begin, std::uint8_t *dst_end, const char *clipa_buffer, const char *clipb_buffer_begin, const char *clipb_buffer_end)
+        {
+            if (sample_type == SF_FORMAT_PCM_16)
+                mix<short>(dst_begin, dst_end, clipa_buffer, d->clipa_level, clipb_buffer_begin, clipb_buffer_end, d->clipb_level, input_channels);
+            else if (sample_type == SF_FORMAT_PCM_32)
+                mix<int>(dst_begin, dst_end, clipa_buffer, d->clipa_level, clipb_buffer_begin, clipb_buffer_end, d->clipb_level, input_channels);
+            else if (sample_type == SF_FORMAT_FLOAT)
+                mix<float>(dst_begin, dst_end, clipa_buffer, d->clipa_level, clipb_buffer_begin, clipb_buffer_end, d->clipb_level, input_channels);
+            else
+                mix<double>(dst_begin, dst_end, clipa_buffer, d->clipa_level, clipb_buffer_begin, clipb_buffer_end, d->clipb_level, input_channels);        
+        };
+
+        mix_helper(d->buffer.data(), d->buffer.data()+d->buffer.size(), clipa_buffer, clipb_buffer, clipb_buffer+clipb_buffer_size);
 
         VSMap *props = vsapi->getFramePropsRW(dst);
         vsapi->propSetData(props, damb_samples, (char *)d->buffer.data(), d->buffer.size(), paReplace);
