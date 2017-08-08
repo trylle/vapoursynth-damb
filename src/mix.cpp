@@ -62,13 +62,7 @@ typedef struct {
 	double clipb_level = 1;
     const VSVideoInfo *vi = nullptr;
 
-    //SF_INFO sfinfo = {};
     std::vector<uint8_t> buffer;
-    //int sample_size = 0;
-    //int sample_type = 0;
-    //double samples_per_frame = 0;
-    //double delay_seconds = 0;
-    //sf_count_t delay_samples = 0;
 } DambMixData;
 
 
